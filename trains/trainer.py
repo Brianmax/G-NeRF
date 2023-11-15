@@ -524,7 +524,7 @@ class Trainer(object):
 
             rgbs.append(results['rgb'])
             depths.append(results['depth'])
-        rgbs = torch.cat(rgbs)  # [N, 3, h, w]
+        rgbs = torch.cat(rgbs)
         depths = torch.cat(depths)
 
         rgbs = ((rgbs.cpu().permute(0, 2, 3, 1) / 2 + 0.5).numpy().clip(0, 1) * 255).astype(np.uint8)

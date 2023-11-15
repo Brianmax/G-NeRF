@@ -6,39 +6,31 @@ from einops import rearrange
 from model.rendering import sample_pdf, Embedding, inference
 
 
-class GNeRF(nn.Module):
+class Generator(nn.Module):
     def __init__(self, ray_sampler, xyz_freq=10, dir_freq=4, fc_depth=8, fc_dim=256, skips=(4,),
                  N_samples=64, N_importance=64, chunk=1024 * 32, white_back=False):
-        super(GNeRF, self).__init__()
+        super(Generator, self).__init__()
         self.ray_sampler = ray_sampler
         self.chunk = chunk
         self.N_samples = N_samples
         self.N_importance = N_importance
         self.white_back = white_back
         self.noise_std = 1.0
-
-        self.nerf = NeRF(xyz_freq=xyz_freq, dir_freq=dir_freq, fc_depth=fc_depth, fc_dim=fc_dim, skips=skips)
-
+        self.nerf = MipNeRF(xyz_freq=xyz_freq, dir_freq=dir_freq, fc_depth=fc_depth, fc_dim=fc_dim, skips=skips)
     def forward(self, coords, img_wh, poses=None):
         nbatch, h, w, _ = coords.shape
         device = coords.device
-
         noise_std = self.noise_std if self.training else 0.0
         perturb = 1.0 if self.training else 0.0
-
         poses = self.ray_sampler.random_poses(nbatch, device) if poses is None else poses
-
         rays = self.ray_sampler.get_rays(coords, poses, img_wh, device)
         rays = rearrange(rays, 'n h w c -> (n h w) c')
-
         results = {'coarse': defaultdict(list), 'fine': defaultdict(list)}
         for i in range(0, rays.shape[0], self.chunk):
             rendered_ray_chunks = self.render_rays(rays=rays[i:i + self.chunk], perturb=perturb, noise_std=noise_std)
-
             for k_1, v_1 in rendered_ray_chunks.items():
                 for k_2, v_2 in v_1.items():
                     results[k_1][k_2] += [v_2]
-
         for k_1, v_1 in results.items():
             for k_2, v_2 in v_1.items():
                 v_2 = torch.cat(v_2, 0)
@@ -87,9 +79,9 @@ class GNeRF(nn.Module):
         end_it = 5000
         if it < end_it:
             self.noise_std = 1.0 - float(it) / end_it
-class NeRF(nn.Module):
+class MipNeRF(nn.Module):
     def __init__(self, xyz_freq=10, dir_freq=4, fc_depth=8, fc_dim=256, skips=(4,)):
-        super(NeRF, self).__init__()
+        super(MipNeRF, self).__init__()
         self.fc_depth = fc_depth
         self.fc_dim = fc_dim
         self.skips = skips
@@ -107,7 +99,6 @@ class NeRF(nn.Module):
             else:
                 layer = nn.Linear(fc_dim, fc_dim)
             layer = nn.Sequential(layer, nn.ReLU(True))
-            setattr(self, f"xyz_encoding_{i + 1}", layer)
         self.xyz_encoding_final = nn.Linear(fc_dim, fc_dim)
 
         self.sigma = nn.Linear(fc_dim, 1)
@@ -132,7 +123,6 @@ class NeRF(nn.Module):
         for i in range(self.fc_depth):
             if i in self.skips:
                 xyz_ = torch.cat([input_xyz, xyz_], -1)
-            xyz_ = getattr(self, f"xyz_encoding_{i + 1}")(xyz_)
         sigma = self.sigma(xyz_)
         if sigma_only:
             return sigma

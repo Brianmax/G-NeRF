@@ -55,19 +55,15 @@ def sample_pdf(bins, weights, N_importance, det=False, eps=1e-5):
 def inference(model, xyz_, dir_, z_vals_, far,
               white_back, chunk, noise_std, weights_only=False):
     N_rays, N_samples = xyz_.shape[:2]
-    rays_d_ = torch.repeat_interleave(dir_, repeats=N_samples, dim=0)  # [N_rays*N_samples, 3]
+    rays_d_ = torch.repeat_interleave(dir_, repeats=N_samples, dim=0)
 
-    # Convert these values using volume rendering (Section 4)
-    xyz_ = xyz_.view(-1, 3)  # [N_rays*N_samples, 4]
+    xyz_ = xyz_.view(-1, 3)
 
     deltas = z_vals_[:, 1:] - z_vals_[:, :-1]  # (N_rays, N_samples_-1)
     deltas = torch.cat([deltas, far - z_vals_[:, -1:]], -1)  # (N_rays, N_samples_)
 
-    # Multiply each distance by the norm of its corresponding direction ray
-    # to convert to real world distance (accounts for non-unit directions).
     deltas = deltas * torch.norm(dir_.unsqueeze(1), dim=-1)
 
-    # Perform model inference to get rgb and raw sigma
     B = xyz_.shape[0]
     out_chunks = []
     for i in range(0, B, chunk):
@@ -81,27 +77,24 @@ def inference(model, xyz_, dir_, z_vals_, far,
         sigmas = out_chunks.view(N_rays, N_samples)
     else:
         rgbsigma = out_chunks.view(N_rays, N_samples, 4)
-        rgbs = rgbsigma[..., :3]  # (N_rays, N_samples_, 3)
-        sigmas = rgbsigma[..., 3]  # (N_rays, N_samples_)
+        rgbs = rgbsigma[..., :3]
+        sigmas = rgbsigma[..., 3]
 
     noise = torch.randn(sigmas.shape, device=sigmas.device) * noise_std
-    # compute alpha by the formula (3)
     alphas = 1 - torch.exp(-deltas * torch.relu(sigmas + noise))  # (N_rays, N_samples_)
     alphas_shifted = torch.cat([torch.ones_like(alphas[:, :1]), 1 - alphas + 1e-10], -1)  # [1, a1, a2, ...]
 
     T = torch.cumprod(alphas_shifted, -1)
-    weights = alphas * T[:, :-1]  # (N_rays, N_samples_)
-    # equals "1 - (1-a1)(1-a2)...(1-an)" mathematically
+    weights = alphas * T[:, :-1]
 
     if weights_only:
         return weights
     else:
-        # compute final weighted outputs
-        rgb_final = torch.sum(weights.unsqueeze(-1) * rgbs, -2)  # [N_rays, 3]
-        depth_final = torch.sum(weights * z_vals_, -1)  # (N_rays)
+        rgb_final = torch.sum(weights.unsqueeze(-1) * rgbs, -2)
+        depth_final = torch.sum(weights * z_vals_, -1)
 
         if white_back:
-            weights_sum = weights.sum(1)  # (N_rays), the accumulated opacity along the rays
+            weights_sum = weights.sum(1)
             rgb_final = rgb_final + 1 - weights_sum.unsqueeze(-1)
 
         return rgb_final, depth_final, weights
